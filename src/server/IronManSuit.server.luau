@@ -34,8 +34,19 @@ local function smooth(t: number): number
 end
 
 local function findRigPart(rig: Model, name: string): BasePart?
-  local obj = rig:FindFirstChild(name)
-  if obj and obj:IsA("BasePart") then return obj end
+  -- Imported armor has both a Model and a MeshPart with the same limb name.
+  -- FindFirstChild(name) can return the Model, wrongly excluding that limb.
+  for _, child in rig:GetChildren() do
+    if child.Name == name and child:IsA("BasePart") then
+      return child
+    end
+  end
+  -- Also support imported rigs with their body parts nested in a container.
+  for _, child in rig:GetDescendants() do
+    if child.Name == name and child:IsA("BasePart") then
+      return child
+    end
+  end
   return nil
 end
 
@@ -87,11 +98,11 @@ local function makeArmorPieces(sourceRig: Model, character: Model): {any}
 
   local function addVisual(sectionName: string, src: BasePart)
     if seen[src] or src.Transparency >= 1 then return end
-    seen[src] = true
     local bodyName = targetForSection(sectionName)
     local fromBody = findRigPart(sourceRig, bodyName)
     local toBody = character:FindFirstChild(bodyName)
     if not (fromBody and toBody and toBody:IsA("BasePart")) then return end
+    seen[src] = true
     local data = sectionsByName[sectionName]
     if not data then
       local group = Instance.new("Folder")
