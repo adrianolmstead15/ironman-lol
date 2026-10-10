@@ -10,3 +10,10 @@ UserInputService.InputBegan:Connect(function(input, processed)
   lastRequest = os.clock()
   event:FireServer()
 end)
+
+-- Toggle faceplate after the suit has assembled.
+local maskEvent = ReplicatedStorage:WaitForChild("IronManMaskToggle")
+UserInputService.InputBegan:Connect(function(input, processed)
+  if processed or input.KeyCode ~= Enum.KeyCode.F then return end
+  maskEvent:FireServer()
+end)

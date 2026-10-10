@@ -9,6 +9,13 @@ local EVENT = ReplicatedStorage:FindFirstChild("IronManSummon") or Instance.new(
 EVENT.Name = "IronManSummon"
 EVENT.Parent = ReplicatedStorage
 
+local TweenService = game:GetService("TweenService")
+local MASK_EVENT = ReplicatedStorage:FindFirstChild("IronManMaskToggle") or Instance.new("RemoteEvent")
+MASK_EVENT.Name = "IronManMaskToggle"
+MASK_EVENT.Parent = ReplicatedStorage
+local maskBusy: {[Player]: boolean} = {}
+local maskOpen: {[Player]: boolean} = {}
+
 local TIME = 2.25
 local FLIGHT_DISTANCE = 170
 local COOLDOWN = 3
@@ -234,6 +241,93 @@ local function restoreAccessoryVisibility(character: Model)
   end
 end
 
+-- Face accessories are handled separately; armor attached to arms/legs stays hidden.
+local function setFaceAccessories(character: Model, visible: boolean)
+  local head = character:FindFirstChild("Head")
+  if not head or not head:IsA("BasePart") then return end
+  for _, accessory in character:GetChildren() do
+    if not accessory:IsA("Accessory") then continue end
+    local handle = accessory:FindFirstChild("Handle")
+    if not handle or not handle:IsA("BasePart") then continue end
+    local mountedOnHead = false
+    for _, joint in handle:GetDescendants() do
+      if joint:IsA("JointInstance") and (joint.Part0 == head or joint.Part1 == head) then
+        mountedOnHead = true
+        break
+      end
+    end
+    if not mountedOnHead then
+      for _, attachment in handle:GetChildren() do
+        if attachment:IsA("Attachment") and head:FindFirstChild(attachment.Name) then
+          mountedOnHead = true
+          break
+        end
+      end
+    end
+    if not mountedOnHead then continue end
+    for _, visual in accessory:GetDescendants() do
+      if visual:IsA("BasePart") or visual:IsA("Decal") or visual:IsA("Texture") then
+        local original = visual:GetAttribute("IronManOriginalTransparency")
+        if visible then
+          if typeof(original) == "number" then visual.Transparency = original end
+        else
+          if original == nil then
+            visual:SetAttribute("IronManOriginalTransparency", visual.Transparency)
+          end
+          visual.Transparency = 1
+        end
+      end
+    end
+  end
+end
+
+-- Only the movable mask is motor-mounted. Everything else retains the proven weld system.
+local function isMovableFaceplate(name: string): boolean
+  local normalized = name:lower():gsub("[^a-z]", "")
+  return normalized:find("uppermask", 1, true) ~= nil
+      or normalized:find("facemask", 1, true) ~= nil
+      or normalized:find("faceplate", 1, true) ~= nil
+end
+
+MASK_EVENT.OnServerEvent:Connect(function(player: Player)
+  if active[player] or maskBusy[player] then return end
+  local character = player.Character
+  if not character then return end
+  local installed = character:FindFirstChild("AssembledIronManArmor")
+  if not installed then return end
+  local faceplateJoints = {}
+  for _, part in installed:GetDescendants() do
+    if part:IsA("BasePart") and part:GetAttribute("IronManMovableMask") == true then
+      local motor = part:FindFirstChild("IronManMaskMotor")
+      if motor and motor:IsA("Motor6D") then table.insert(faceplateJoints, motor) end
+    end
+  end
+  if #faceplateJoints == 0 then
+    warn("Iron Man: no separate UpperMask/Faceplate mesh was found for opening")
+    return
+  end
+  maskBusy[player] = true
+  local opening = not maskOpen[player]
+  local info = TweenInfo.new(0.55, Enum.EasingStyle.Quart, Enum.EasingDirection.InOut)
+  for _, motor in faceplateJoints do
+    local original: CFrame = motor:GetAttribute("ClosedC0") or motor.C0
+    -- Pivot at the upper edge of the face. Rotation and lift happen smoothly together.
+    local openOffset = CFrame.new(0, 0.35, 0.18) * CFrame.Angles(math.rad(-105), 0, 0)
+    TweenService:Create(motor, info, {C0 = original * (opening and openOffset or CFrame.identity)}):Play()
+  end
+  if opening then
+    task.delay(0.25, function()
+      if player.Character == character then setFaceAccessories(character, true) end
+    end)
+  else
+    setFaceAccessories(character, false)
+  end
+  task.delay(0.58, function()
+    if player.Character == character then maskOpen[player] = opening end
+    maskBusy[player] = nil
+  end)
+end)
+
 local function animateSection(data: any, startTime: number, direction: Vector3, character: Model)
   local body: BasePart = data.body
   local id = data.name
@@ -295,10 +389,22 @@ local function animateSection(data: any, startTime: number, direction: Vector3, 
     end
     p.Parent = data.installed
     p.Anchored = false
-    local weld = Instance.new("WeldConstraint")
-    weld.Part0 = body
-    weld.Part1 = p
-    weld.Parent = p
+    if body.Name == "Head" and isMovableFaceplate(p.Name) then
+      local motor = Instance.new("Motor6D")
+      motor.Name = "IronManMaskMotor"
+      motor.Part0 = body
+      motor.Part1 = p
+      motor.C0 = item.offset
+      motor.C1 = CFrame.identity
+      motor:SetAttribute("ClosedC0", item.offset)
+      motor.Parent = p
+      p:SetAttribute("IronManMovableMask", true)
+    else
+      local weld = Instance.new("WeldConstraint")
+      weld.Part0 = body
+      weld.Part1 = p
+      weld.Parent = p
+    end
   end
   data.group:Destroy()
 end
@@ -323,6 +429,8 @@ EVENT.OnServerEvent:Connect(function(player: Player)
   local old = character:FindFirstChild("AssembledIronManArmor")
   if old then old:Destroy() end
   restoreAccessoryVisibility(character)
+  maskOpen[player] = nil
+  maskBusy[player] = nil
   active[player] = true
   lastUse[player] = now
   local sections, incoming, installed = makeArmorPieces(rig, character)
@@ -351,4 +459,6 @@ end)
 Players.PlayerRemoving:Connect(function(player)
   active[player] = nil
   lastUse[player] = nil
+  maskOpen[player] = nil
+  maskBusy[player] = nil
 end)
