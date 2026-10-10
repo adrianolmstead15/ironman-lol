@@ -289,6 +289,38 @@ local function isMovableFaceplate(name: string): boolean
       or normalized:find("faceplate", 1, true) ~= nil
 end
 
+-- Some imported helmets contain a second, stationary face-cover mesh.
+-- Hide that overlay while the upper faceplate is raised so the face is visible.
+-- Restore the original appearance when the mask closes.
+local function setFixedFaceCover(installed: Instance, open: boolean)
+  for _, part in installed:GetDescendants() do
+    if not part:IsA("BasePart") or part:GetAttribute("IronManMovableMask") == true then continue end
+    local name = part.Name:lower():gsub("[^a-z]", "")
+    local fixedCover = name:find("lowermask", 1, true)
+      or name:find("facecover", 1, true)
+      or name:find("facemask", 1, true)
+      or name:find("faceplate", 1, true)
+    if fixedCover then
+      local saved = part:GetAttribute("IronManFixedCoverOriginalTransparency")
+      if typeof(saved) ~= "number" then
+        saved = part.Transparency
+        part:SetAttribute("IronManFixedCoverOriginalTransparency", saved)
+      end
+      part.Transparency = open and 1 or saved
+      for _, decal in part:GetDescendants() do
+        if decal:IsA("Decal") or decal:IsA("Texture") then
+          local prior = decal:GetAttribute("IronManFixedCoverOriginalTransparency")
+          if typeof(prior) ~= "number" then
+            prior = decal.Transparency
+            decal:SetAttribute("IronManFixedCoverOriginalTransparency", prior)
+          end
+          decal.Transparency = open and 1 or prior
+        end
+      end
+    end
+  end
+end
+
 MASK_EVENT.OnServerEvent:Connect(function(player: Player)
   if active[player] or maskBusy[player] then return end
   local character = player.Character
@@ -316,11 +348,16 @@ MASK_EVENT.OnServerEvent:Connect(function(player: Player)
     TweenService:Create(motor, info, {C0 = original * (opening and openOffset or CFrame.identity)}):Play()
   end
   if opening then
+    -- Wait until the moving plate has cleared the face to avoid a visible pop.
     task.delay(0.25, function()
-      if player.Character == character then setFaceAccessories(character, true) end
+      if player.Character == character and installed.Parent == character then
+        setFixedFaceCover(installed, true)
+        setFaceAccessories(character, true)
+      end
     end)
   else
     setFaceAccessories(character, false)
+    setFixedFaceCover(installed, false)
   end
   task.delay(0.58, function()
     if player.Character == character then maskOpen[player] = opening end
