@@ -280,23 +280,8 @@ local function animateSection(data: any, startTime: number, direction: Vector3, 
   end
 
   if not character.Parent or not body.Parent then return end
-  -- Hide the regular avatar limb only when the corresponding armor arrives.
-  -- The suit's original rig MeshPart is itself the replacement visual.
-  -- Keep the underlying body part (and its joints) for animation and collisions.
-  if data.name ~= "Iron Man Helmet" and order[body.Name] ~= nil then
-    if body:GetAttribute("IronManOriginalTransparency") == nil then
-      body:SetAttribute("IronManOriginalTransparency", body.Transparency)
-    end
-    body.Transparency = 1
-    for _, child in body:GetChildren() do
-      if child:IsA("Decal") or child:IsA("Texture") then
-        if child:GetAttribute("IronManOriginalTransparency") == nil then
-          child:SetAttribute("IronManOriginalTransparency", child.Transparency)
-        end
-        child.Transparency = 1
-      end
-    end
-  end
+  -- Leave the player's actual body and its textures unchanged.
+  -- Only hide accessories attached to the section that has just arrived.
   hideAccessoriesForBody(character, body)
   if trail then trail.Enabled = false end
   for _, item in data.parts do
@@ -338,24 +323,6 @@ EVENT.OnServerEvent:Connect(function(player: Player)
   local old = character:FindFirstChild("AssembledIronManArmor")
   if old then old:Destroy() end
   restoreAccessoryVisibility(character)
-  for _, limb in character:GetChildren() do
-    if limb:IsA("BasePart") then
-      local previous = limb:GetAttribute("IronManOriginalTransparency")
-      if typeof(previous) == "number" then
-        limb.Transparency = previous
-        limb:SetAttribute("IronManOriginalTransparency", nil)
-      end
-      for _, child in limb:GetChildren() do
-        if child:IsA("Decal") or child:IsA("Texture") then
-          local prior = child:GetAttribute("IronManOriginalTransparency")
-          if typeof(prior) == "number" then
-            child.Transparency = prior
-            child:SetAttribute("IronManOriginalTransparency", nil)
-          end
-        end
-      end
-    end
-  end
   active[player] = true
   lastUse[player] = now
   local sections, incoming, installed = makeArmorPieces(rig, character)
