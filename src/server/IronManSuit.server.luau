@@ -44,59 +44,119 @@ local function targetForSection(name: string): string
   return name
 end
 
-local function collectVisuals(section: Instance): {BasePart}
-  local visuals: {BasePart} = {}
-  for _, inst in section:GetDescendants() do
-    if inst:IsA("BasePart") then table.insert(visuals, inst) end
+-- Collect meshes regardless of whether Toolbox imported them as Models or MeshParts.
+-- Many armor assets use a mixed hierarchy, including a generic Model container.
+local function armorMeshes(section: Instance): {BasePart}
+  local parts: {BasePart} = {}
+  if section:IsA("MeshPart") or section:IsA("UnionOperation") then
+    table.insert(parts, section)
   end
-  return visuals
+  for _, inst in section:GetDescendants() do
+    if inst:IsA("MeshPart") or inst:IsA("UnionOperation") or (inst:IsA("Part") and inst:FindFirstChildOfClass("SpecialMesh")) then
+      table.insert(parts, inst)
+    end
+  end
+  return parts
+end
+
+local function nearestBody(sourceRig: Model, mesh: BasePart): string?
+  local closest: string? = nil
+  local distance = math.huge
+  for name in order do
+    local bodyName = targetForSection(name)
+    local part = findRigPart(sourceRig, bodyName)
+    if part then
+      local d = (part.Position - mesh.Position).Magnitude
+      if d < distance then
+        closest, distance = bodyName, d
+      end
+    end
+  end
+  return closest
 end
 
 local function makeArmorPieces(sourceRig: Model, character: Model): {any}
-  local sections = {}
   local installed = Instance.new("Folder")
   installed.Name = "AssembledIronManArmor"
   installed.Parent = character
   local flightFolder = Instance.new("Folder")
   flightFolder.Name = "IncomingIronManArmor"
   flightFolder.Parent = workspace
+  local sectionsByName: {[string]: any} = {}
+  local seen: {[Instance]: boolean} = {}
 
-  for _, section in sourceRig:GetChildren() do
-    if not section:IsA("Model") or order[section.Name] == nil then continue end
-    local bodyName = targetForSection(section.Name)
+  local function addVisual(sectionName: string, src: BasePart)
+    if seen[src] or src.Transparency >= 1 then return end
+    seen[src] = true
+    local bodyName = targetForSection(sectionName)
     local fromBody = findRigPart(sourceRig, bodyName)
     local toBody = character:FindFirstChild(bodyName)
-    if not (fromBody and toBody and toBody:IsA("BasePart")) then continue end
-    local sourceVisuals = collectVisuals(section)
-    if #sourceVisuals == 0 then continue end
-
-    local group = Instance.new("Folder")
-    group.Name = section.Name
-    group.Parent = flightFolder
-    local parts = {}
-    for _, src in sourceVisuals do
-      local dst = src:Clone()
-      -- Remove constraints/other descendants from imported models.
-      for _, child in dst:GetDescendants() do
-        if child:IsA("LuaSourceContainer") or child:IsA("JointInstance") or child:IsA("Constraint") then
-          child:Destroy()
-        end
-      end
-      dst.Anchored = true
-      dst.CanCollide = false
-      dst.CanTouch = false
-      dst.CanQuery = false
-      dst.Massless = true
-      dst.Parent = group
-      local offset = fromBody.CFrame:ToObjectSpace(src.CFrame)
-      table.insert(parts, {part = dst, offset = offset, transparency = src.Transparency})
+    if not (fromBody and toBody and toBody:IsA("BasePart")) then return end
+    local data = sectionsByName[sectionName]
+    if not data then
+      local group = Instance.new("Folder")
+      group.Name = sectionName
+      group.Parent = flightFolder
+      data = {
+        name = sectionName, body = toBody, group = group, parts = {},
+        start = (order[sectionName] or 0.42) * TIME,
+        duration = sectionDuration, installed = installed,
+      }
+      sectionsByName[sectionName] = data
     end
-    table.insert(sections, {
-      name = section.Name, body = toBody, group = group, parts = parts,
-      start = order[section.Name] * TIME, duration = sectionDuration,
-      installed = installed,
-    })
+    local dst = src:Clone()
+    for _, child in dst:GetDescendants() do
+      if child:IsA("LuaSourceContainer") or child:IsA("JointInstance") or child:IsA("Constraint") then
+        child:Destroy()
+      end
+    end
+    dst.Anchored = true
+    dst.CanCollide = false
+    dst.CanTouch = false
+    dst.CanQuery = false
+    dst.Massless = true
+    dst.Parent = data.group
+    local offset = fromBody.CFrame:ToObjectSpace(src.CFrame)
+    table.insert(data.parts, {part = dst, offset = offset, transparency = src.Transparency})
   end
+
+  -- Named body armor groups go to their intended limbs.
+  for _, child in sourceRig:GetChildren() do
+    if order[child.Name] and child:IsA("Model") then
+      for _, src in armorMeshes(child) do
+        addVisual(child.Name, src)
+      end
+    end
+  end
+
+  -- Catch loose armor meshes stored in generic containers or directly in the rig.
+  -- Never duplicate the original rig's R15 body parts or hair/accessories.
+  for _, descendant in sourceRig:GetDescendants() do
+    if seen[descendant] or not descendant:IsA("BasePart") then continue end
+    if not (descendant:IsA("MeshPart") or descendant:IsA("UnionOperation") or descendant:FindFirstChildOfClass("SpecialMesh")) then continue end
+    if descendant.Parent == sourceRig and (findRigPart(sourceRig, descendant.Name) == descendant or descendant.Name == "HumanoidRootPart") then continue end
+    if descendant:FindFirstAncestorOfClass("Accessory") then continue end
+    local section: string? = nil
+    local ancestor = descendant.Parent
+    while ancestor and ancestor ~= sourceRig do
+      if order[ancestor.Name] then section = ancestor.Name; break end
+      ancestor = ancestor.Parent
+    end
+    section = section or nearestBody(sourceRig, descendant)
+    if section then
+      if order[section] == nil then
+        section = section == "Head" and "Iron Man Helmet" or section
+      end
+      addVisual(section, descendant)
+    end
+  end
+
+  local sections = {}
+  for _, data in sectionsByName do
+    table.insert(sections, data)
+  end
+  table.sort(sections, function(a, b) return a.start < b.start end)
+  print(string.format("Iron Man: prepared %d armor sections", #sections))
   return sections, flightFolder, installed
 end
 
