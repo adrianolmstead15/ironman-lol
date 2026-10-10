@@ -289,36 +289,52 @@ local function isMovableFaceplate(name: string): boolean
       or normalized:find("faceplate", 1, true) ~= nil
 end
 
--- Some imported helmets contain a second, stationary face-cover mesh.
--- Hide that overlay while the upper faceplate is raised so the face is visible.
--- Restore the original appearance when the mask closes.
+-- Hide every fixed front-face layer when opening, including the imported rig's
+-- visible Head MeshPart (the old filter missed that piece). The actual player
+-- Head remains untouched: this only traverses AssembledIronManArmor.
+-- Preserve rear helmet shell parts when they are separately named.
 local function setFixedFaceCover(installed: Instance, open: boolean)
+  local count = 0
   for _, part in installed:GetDescendants() do
     if not part:IsA("BasePart") or part:GetAttribute("IronManMovableMask") == true then continue end
     local name = part.Name:lower():gsub("[^a-z]", "")
-    local fixedCover = name:find("lowermask", 1, true)
+    local rearShell = name:find("back", 1, true)
+      or name:find("rear", 1, true)
+      or name:find("backshell", 1, true)
+    local frontFace = name == "head"
+      or name:find("lowermask", 1, true)
+      or name:find("uppermask", 1, true)
       or name:find("facecover", 1, true)
       or name:find("facemask", 1, true)
       or name:find("faceplate", 1, true)
-    if fixedCover then
+      or name:find("eyemask", 1, true)
+      or name:find("eyeglow", 1, true)
+      or name:find("eyelight", 1, true)
+      or name:find("visor", 1, true)
+      or name:find("mouth", 1, true)
+      or name:find("jaw", 1, true)
+      or name:find("chin", 1, true)
+    if frontFace and not rearShell then
+      count += 1
       local saved = part:GetAttribute("IronManFixedCoverOriginalTransparency")
       if typeof(saved) ~= "number" then
         saved = part.Transparency
         part:SetAttribute("IronManFixedCoverOriginalTransparency", saved)
       end
       part.Transparency = open and 1 or saved
-      for _, decal in part:GetDescendants() do
-        if decal:IsA("Decal") or decal:IsA("Texture") then
-          local prior = decal:GetAttribute("IronManFixedCoverOriginalTransparency")
+      for _, visual in part:GetDescendants() do
+        if visual:IsA("Decal") or visual:IsA("Texture") then
+          local prior = visual:GetAttribute("IronManFixedCoverOriginalTransparency")
           if typeof(prior) ~= "number" then
-            prior = decal.Transparency
-            decal:SetAttribute("IronManFixedCoverOriginalTransparency", prior)
+            prior = visual.Transparency
+            visual:SetAttribute("IronManFixedCoverOriginalTransparency", prior)
           end
-          decal.Transparency = open and 1 or prior
+          visual.Transparency = open and 1 or prior
         end
       end
     end
   end
+  print(string.format("Iron Man: %s %d fixed face covering meshes", open and "hid" or "restored", count))
 end
 
 MASK_EVENT.OnServerEvent:Connect(function(player: Player)
