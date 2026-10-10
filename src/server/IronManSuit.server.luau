@@ -120,6 +120,15 @@ local function makeArmorPieces(sourceRig: Model, character: Model): {any}
     table.insert(data.parts, {part = dst, offset = offset, transparency = src.Transparency})
   end
 
+  -- This imported suit uses its R15 rig MeshParts as visible armor, not
+  -- just animation anchors. Previous versions excluded these and left only
+  -- the separately modeled mask visible.
+  for _, bodyPart in sourceRig:GetChildren() do
+    if bodyPart:IsA("MeshPart") and order[bodyPart.Name] ~= nil and bodyPart.Name ~= "HumanoidRootPart" then
+      addVisual(bodyPart.Name, bodyPart)
+    end
+  end
+
   -- Named body armor groups go to their intended limbs.
   for _, child in sourceRig:GetChildren() do
     if order[child.Name] and child:IsA("Model") then
@@ -156,7 +165,9 @@ local function makeArmorPieces(sourceRig: Model, character: Model): {any}
     table.insert(sections, data)
   end
   table.sort(sections, function(a, b) return a.start < b.start end)
-  print(string.format("Iron Man: prepared %d armor sections", #sections))
+  local total = 0
+  for _, section in sections do total += #section.parts end
+  print(string.format("Iron Man: prepared %d armor sections, %d visible parts", #sections, total))
   return sections, flightFolder, installed
 end
 
@@ -258,7 +269,23 @@ local function animateSection(data: any, startTime: number, direction: Vector3, 
   end
 
   if not character.Parent or not body.Parent then return end
-  -- The armor covers this section now; hide its accessories at this exact moment.
+  -- Hide the regular avatar limb only when the corresponding armor arrives.
+  -- The suit's original rig MeshPart is itself the replacement visual.
+  -- Keep the underlying body part (and its joints) for animation and collisions.
+  if data.name ~= "Iron Man Helmet" and order[body.Name] ~= nil then
+    if body:GetAttribute("IronManOriginalTransparency") == nil then
+      body:SetAttribute("IronManOriginalTransparency", body.Transparency)
+    end
+    body.Transparency = 1
+    for _, child in body:GetChildren() do
+      if child:IsA("Decal") or child:IsA("Texture") then
+        if child:GetAttribute("IronManOriginalTransparency") == nil then
+          child:SetAttribute("IronManOriginalTransparency", child.Transparency)
+        end
+        child.Transparency = 1
+      end
+    end
+  end
   hideAccessoriesForBody(character, body)
   if trail then trail.Enabled = false end
   for _, item in data.parts do
@@ -300,6 +327,24 @@ EVENT.OnServerEvent:Connect(function(player: Player)
   local old = character:FindFirstChild("AssembledIronManArmor")
   if old then old:Destroy() end
   restoreAccessoryVisibility(character)
+  for _, limb in character:GetChildren() do
+    if limb:IsA("BasePart") then
+      local previous = limb:GetAttribute("IronManOriginalTransparency")
+      if typeof(previous) == "number" then
+        limb.Transparency = previous
+        limb:SetAttribute("IronManOriginalTransparency", nil)
+      end
+      for _, child in limb:GetChildren() do
+        if child:IsA("Decal") or child:IsA("Texture") then
+          local prior = child:GetAttribute("IronManOriginalTransparency")
+          if typeof(prior) == "number" then
+            child.Transparency = prior
+            child:SetAttribute("IronManOriginalTransparency", nil)
+          end
+        end
+      end
+    end
+  end
   active[player] = true
   lastUse[player] = now
   local sections, incoming, installed = makeArmorPieces(rig, character)
