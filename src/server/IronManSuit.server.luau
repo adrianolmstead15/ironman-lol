@@ -9,9 +9,9 @@ local EVENT = ReplicatedStorage:FindFirstChild("IronManSummon") or Instance.new(
 EVENT.Name = "IronManSummon"
 EVENT.Parent = ReplicatedStorage
 
-local TIME = 1.5
+local TIME = 2.25
 local FLIGHT_DISTANCE = 170
-local COOLDOWN = 2
+local COOLDOWN = 3
 local lastUse: {[Player]: number} = {}
 local active: {[Player]: boolean} = {}
 
@@ -25,11 +25,12 @@ local order = {
   LeftUpperArm = 0.66, RightUpperArm = 0.66,
   Head = 0.79, ["Iron Man Helmet"] = 0.79,
 }
-local sectionDuration = 0.18
+local sectionDuration = 0.27
 
 local function smooth(t: number): number
   t = math.clamp(t, 0, 1)
-  return 1 - (1-t)^4
+  -- Fast approach, then a deliberate final lock-on.
+  return 1 - (1-t)^3
 end
 
 local function findRigPart(rig: Model, name: string): BasePart?
@@ -99,6 +100,58 @@ local function makeArmorPieces(sourceRig: Model, character: Model): {any}
   return sections, flightFolder, installed
 end
 
+-- Hide only accessories mounted to the body section that just received armor.
+-- Leave the player's unrelated accessories alone until their own section arrives.
+local function hideAccessoriesForBody(character: Model, body: BasePart)
+  for _, accessory in character:GetChildren() do
+    if not accessory:IsA("Accessory") then continue end
+    local handle = accessory:FindFirstChild("Handle")
+    if not handle or not handle:IsA("BasePart") then continue end
+    local belongs = false
+    -- Roblox accessories use AccessoryWeld or other joints connected to a limb.
+    for _, descendant in handle:GetDescendants() do
+      if descendant:IsA("JointInstance") and (descendant.Part0 == body or descendant.Part1 == body) then
+        belongs = true
+        break
+      end
+    end
+    if not belongs then
+      -- Attachment matching catches accessories whose joint is not exposed yet.
+      for _, attachment in handle:GetChildren() do
+        if attachment:IsA("Attachment") and body:FindFirstChild(attachment.Name) then
+          belongs = true
+          break
+        end
+      end
+    end
+    if belongs then
+      for _, visual in accessory:GetDescendants() do
+        if visual:IsA("BasePart") or visual:IsA("Decal") or visual:IsA("Texture") then
+          if visual:GetAttribute("IronManOriginalTransparency") == nil then
+            visual:SetAttribute("IronManOriginalTransparency", visual.Transparency)
+          end
+          visual.Transparency = 1
+        end
+      end
+    end
+  end
+end
+
+local function restoreAccessoryVisibility(character: Model)
+  for _, accessory in character:GetChildren() do
+    if not accessory:IsA("Accessory") then continue end
+    for _, visual in accessory:GetDescendants() do
+      if visual:IsA("BasePart") or visual:IsA("Decal") or visual:IsA("Texture") then
+        local previous = visual:GetAttribute("IronManOriginalTransparency")
+        if typeof(previous) == "number" then
+          visual.Transparency = previous
+          visual:SetAttribute("IronManOriginalTransparency", nil)
+        end
+      end
+    end
+  end
+end
+
 local function animateSection(data: any, startTime: number, direction: Vector3, character: Model)
   local body: BasePart = data.body
   local id = data.name
@@ -106,12 +159,36 @@ local function animateSection(data: any, startTime: number, direction: Vector3, 
   local sideways = (seed % 2 == 0 and 1 or -1) * (25 + seed % 18)
   local pathOffset = direction * FLIGHT_DISTANCE + Vector3.new(sideways, 55 + seed % 22, 0)
   local endTime = startTime + data.start + data.duration
+  -- Only one effect per section to avoid overwhelming the scene.
+  local trail: Trail? = nil
+  local first = data.parts[1]
+  if first then
+    local a0 = Instance.new("Attachment")
+    a0.Position = Vector3.new(0, 0.22, 0)
+    a0.Name = "IronManFlightTrail"
+    a0.Parent = first.part
+    local a1 = Instance.new("Attachment")
+    a1.Position = Vector3.new(0, -0.22, 0)
+    a1.Name = "IronManFlightTrail"
+    a1.Parent = first.part
+    trail = Instance.new("Trail")
+    trail.Attachment0 = a0
+    trail.Attachment1 = a1
+    trail.Lifetime = 0.11
+    trail.MinLength = 0.06
+    trail.LightEmission = 0.6
+    trail.Color = ColorSequence.new(Color3.fromRGB(115, 225, 255))
+    trail.Transparency = NumberSequence.new(0.25, 1)
+    trail.Parent = first.part
+  end
   local beganAt = startTime + data.start
 
   while os.clock() < endTime do
     if not character.Parent or not body.Parent then return end
-    local t = smooth((os.clock() - beganAt) / data.duration)
+    local rawT = math.clamp((os.clock() - beganAt) / data.duration, 0, 1)
+    local t = smooth(rawT)
     local offset = pathOffset * (1-t)
+    -- Incoming parts stabilize just before reaching their mounting position.
     local rotation = CFrame.Angles(0, (1-t)*math.rad(100), (1-t)*math.rad(65))
     local base = body.CFrame * CFrame.new(offset) * rotation
     for _, item in data.parts do
@@ -121,10 +198,18 @@ local function animateSection(data: any, startTime: number, direction: Vector3, 
   end
 
   if not character.Parent or not body.Parent then return end
+  -- The armor covers this section now; hide its accessories at this exact moment.
+  hideAccessoriesForBody(character, body)
+  if trail then trail.Enabled = false end
   for _, item in data.parts do
     local p: BasePart = item.part
     p.CFrame = body.CFrame * item.offset
     p.Transparency = item.transparency
+    -- Remove flight effects before welding so trails never remain on worn armor.
+    for _, child in p:GetChildren() do
+      if child:IsA("Trail") then child:Destroy() end
+      if child:IsA("Attachment") and child.Name == "IronManFlightTrail" then child:Destroy() end
+    end
     p.Parent = data.installed
     p.Anchored = false
     local weld = Instance.new("WeldConstraint")
@@ -154,6 +239,7 @@ EVENT.OnServerEvent:Connect(function(player: Player)
   end
   local old = character:FindFirstChild("AssembledIronManArmor")
   if old then old:Destroy() end
+  restoreAccessoryVisibility(character)
   active[player] = true
   lastUse[player] = now
   local sections, incoming, installed = makeArmorPieces(rig, character)
@@ -174,7 +260,7 @@ EVENT.OnServerEvent:Connect(function(player: Player)
       remaining -= 1
     end)
   end
-  while remaining > 0 and os.clock() - startTime < 3 do task.wait(0.05) end
+  while remaining > 0 and os.clock() - startTime < TIME + 1.5 do task.wait(0.05) end
   incoming:Destroy()
   active[player] = nil
 end)
