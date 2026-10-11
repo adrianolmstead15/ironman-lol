@@ -294,47 +294,79 @@ end
 -- Head remains untouched: this only traverses AssembledIronManArmor.
 -- Preserve rear helmet shell parts when they are separately named.
 local function setFixedFaceCover(installed: Instance, open: boolean)
+  local character = installed.Parent
+  local head = character and character:FindFirstChild("Head")
+  if not head or not head:IsA("BasePart") then return end
+
   local count = 0
   for _, part in installed:GetDescendants() do
-    if not part:IsA("BasePart") or part:GetAttribute("IronManMovableMask") == true then continue end
-    local name = part.Name:lower():gsub("[^a-z]", "")
-    local rearShell = name:find("back", 1, true)
-      or name:find("rear", 1, true)
-      or name:find("backshell", 1, true)
-    local frontFace = name == "head"
-      or name:find("lowermask", 1, true)
-      or name:find("uppermask", 1, true)
-      or name:find("facecover", 1, true)
-      or name:find("facemask", 1, true)
-      or name:find("faceplate", 1, true)
-      or name:find("eyemask", 1, true)
-      or name:find("eyeglow", 1, true)
-      or name:find("eyelight", 1, true)
-      or name:find("visor", 1, true)
-      or name:find("mouth", 1, true)
-      or name:find("jaw", 1, true)
+    if not part:IsA("BasePart") then continue end
+
+    local name = part.Name:lower():gsub("[^a-z0-9]", "")
+    local rear = name:find("rear", 1, true) or name:find("back", 1, true)
+      or name:find("shell", 1, true) or name:find("side", 1, true)
+    local eye = name:find("eye", 1, true) or name:find("lens", 1, true)
+      or name:find("optic", 1, true) or name:find("glow", 1, true)
+      or name:find("emissive", 1, true)
+    local cover = name == "head" or name:find("mask", 1, true)
+      or name:find("face", 1, true) or name:find("visor", 1, true)
+      or name:find("jaw", 1, true) or name:find("mouth", 1, true)
       or name:find("chin", 1, true)
-    if frontFace and not rearShell then
-      count += 1
-      local saved = part:GetAttribute("IronManFixedCoverOriginalTransparency")
-      if typeof(saved) ~= "number" then
-        saved = part.Transparency
-        part:SetAttribute("IronManFixedCoverOriginalTransparency", saved)
+
+    -- Inspect the actual welded target rather than blindly hiding armor
+    -- based on names shared by chest/hand meshes.
+    local mountedToHead = false
+    for _, joint in part:GetChildren() do
+      if joint:IsA("WeldConstraint") or joint:IsA("Motor6D") then
+        if joint.Part0 == head or joint.Part1 == head then
+          mountedToHead = true
+          break
+        end
       end
-      part.Transparency = open and 1 or saved
+    end
+    if not mountedToHead then continue end
+
+    -- Some imported eye meshes have generic names. Catch small components
+    -- located directly in front of the character's head (not the back shell).
+    local relative = head.CFrame:PointToObjectSpace(part.Position)
+    local frontOfFace = relative.Z < -0.10 and math.abs(relative.X) < 0.85
+      and math.abs(relative.Y) < 0.85
+    local smallFrontDetail = frontOfFace and part.Size.Magnitude < 2.2
+
+    local movable = part:GetAttribute("IronManMovableMask") == true
+    local hidePart = (eye or cover or smallFrontDetail) and not rear and not movable
+
+    -- Turn off glowing eye lights even if they belong to the lifted faceplate.
+    if mountedToHead and (eye or cover or movable or smallFrontDetail) then
+      for _, effect in part:GetDescendants() do
+        if effect:IsA("Light") or effect:IsA("ParticleEmitter")
+          or effect:IsA("Beam") or effect:IsA("Trail") then
+          if effect:GetAttribute("IronManOriginalEnabled") == nil then
+            effect:SetAttribute("IronManOriginalEnabled", effect.Enabled)
+          end
+          effect.Enabled = open and false or effect:GetAttribute("IronManOriginalEnabled")
+        end
+      end
+    end
+
+    if hidePart then
+      count += 1
+      if part:GetAttribute("IronManCoverOriginalTransparency") == nil then
+        part:SetAttribute("IronManCoverOriginalTransparency", part.Transparency)
+      end
+      local original = part:GetAttribute("IronManCoverOriginalTransparency")
+      part.Transparency = open and 1 or original
       for _, visual in part:GetDescendants() do
         if visual:IsA("Decal") or visual:IsA("Texture") then
-          local prior = visual:GetAttribute("IronManFixedCoverOriginalTransparency")
-          if typeof(prior) ~= "number" then
-            prior = visual.Transparency
-            visual:SetAttribute("IronManFixedCoverOriginalTransparency", prior)
+          if visual:GetAttribute("IronManCoverOriginalTransparency") == nil then
+            visual:SetAttribute("IronManCoverOriginalTransparency", visual.Transparency)
           end
-          visual.Transparency = open and 1 or prior
+          visual.Transparency = open and 1 or visual:GetAttribute("IronManCoverOriginalTransparency")
         end
       end
     end
   end
-  print(string.format("Iron Man: %s %d fixed face covering meshes", open and "hid" or "restored", count))
+  print(string.format("Iron Man: %s %d helmet face meshes/eye details", open and "hid" or "restored", count))
 end
 
 MASK_EVENT.OnServerEvent:Connect(function(player: Player)
