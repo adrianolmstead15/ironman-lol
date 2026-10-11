@@ -62,6 +62,7 @@ local function stop(player)
         local h = character:FindFirstChildOfClass("Humanoid")
         if h and h.Health > 0 then h.PlatformStand = false; h.AutoRotate = true end
         character:SetAttribute("IronManFlying", false)
+        character:SetAttribute("IronManBoosting", false)
     end
 end
 
@@ -92,8 +93,8 @@ local function start(player)
     humanoid.PlatformStand = true
     humanoid.AutoRotate = false
     character:SetAttribute("IronManFlying", true)
-    flames(character)
-    local state = {character=character,lv=lv,ao=ao,attachment=att,connections={},lastCommand=os.clock()}
+    local thrusterEffects = flames(character)
+    local state = {character=character,lv=lv,ao=ao,attachment=att,connections={},lastCommand=os.clock(),targetVelocity=Vector3.zero,boost=false,thrusterEffects=thrusterEffects}
     states[player] = state
     table.insert(state.connections, humanoid.Died:Connect(function() stop(player) end))
     table.insert(state.connections, character.AncestryChanged:Connect(function(_, parent) if not parent then stop(player) end end))
@@ -112,19 +113,32 @@ event.OnServerEvent:Connect(function(player, action, direction, facing, boost)
     if facing.X ~= facing.X or facing.Y ~= facing.Y or facing.Z ~= facing.Z then return end
     if direction.Magnitude > 1.01 or facing.Magnitude > 1.01 then return end
     state.lastCommand = os.clock()
-    state.lv.VectorVelocity = direction * (boost and BOOST_SPEED or NORMAL_SPEED)
+    state.targetVelocity = direction * (boost and BOOST_SPEED or NORMAL_SPEED)
+    state.boost = boost
+    state.character:SetAttribute("IronManBoosting", boost and direction.Magnitude > 0.1)
     local flat = Vector3.new(facing.X, 0, facing.Z)
     if flat.Magnitude > 0.05 then
         state.ao.CFrame = CFrame.lookAt(Vector3.zero, flat.Unit) * CFrame.Angles(math.rad(-math.clamp(direction.Y*15, -15, 15)), 0, 0)
     end
 end)
 
--- If client stops sending input, hover rather than keep speeding away.
-task.spawn(function()
-    while true do
-        task.wait(0.25)
-        for player, state in states do
-            if os.clock() - state.lastCommand > 0.6 then state.lv.VectorVelocity = Vector3.zero end
+-- Smooth acceleration and deceleration; stale input settles into hover.
+game:GetService("RunService").Heartbeat:Connect(function(dt)
+    for player, state in states do
+        if not state.lv.Parent or player.Character ~= state.character then continue end
+        if os.clock() - state.lastCommand > 0.6 then
+            state.targetVelocity = Vector3.zero
+            state.boost = false
+            state.character:SetAttribute("IronManBoosting", false)
+        end
+        local response = state.boost and 4.8 or 3.4
+        state.lv.VectorVelocity = state.lv.VectorVelocity:Lerp(state.targetVelocity, 1 - math.exp(-response * dt))
+        local speedRatio = math.clamp(state.lv.VectorVelocity.Magnitude / BOOST_SPEED, 0, 1)
+        for _, inst in state.thrusterEffects do
+            if inst:IsA("ParticleEmitter") and inst.Parent then
+                inst.Rate = (state.boost and 115 or 55) + math.floor(22 * speedRatio)
+                inst.Speed = NumberRange.new(12 + 20 * speedRatio, 22 + 30 * speedRatio)
+            end
         end
     end
 end)
