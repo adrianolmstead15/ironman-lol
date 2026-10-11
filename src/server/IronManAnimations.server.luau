@@ -1,135 +1,136 @@
--- Layered R15 Iron Man poses. Does not change flight physics or the suit-up code.
--- Operates on Motor6D.C0 so the pose is visible to other players as well.
+-- R15 Iron Man flight poses. Replaces the previous animation controller.
+-- Uses the character's real R15 Motor6D joints so welded armor moves with them.
 local Players = game:GetService("Players")
-local RS = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local event = RS:FindFirstChild("IronManAnimationAction") or Instance.new("RemoteEvent")
-event.Name = "IronManAnimationAction"
-event.Parent = RS
+local action = ReplicatedStorage:FindFirstChild("IronManAnimationAction") or Instance.new("RemoteEvent")
+action.Name = "IronManAnimationAction"
+action.Parent = ReplicatedStorage
 
-local records = {}
-local angles = math.rad
-local function pose(x, y, z)
-    return CFrame.Angles(angles(x), angles(y), angles(z))
+local jointsByPlayer = {}
+local desiredAim = {}
+local RAD = math.rad
+local function rotate(x, y, z)
+    return CFrame.Angles(RAD(x), RAD(y), RAD(z))
 end
-local function getMotor(character, name)
-    for _, item in character:GetDescendants() do
-        if item:IsA("Motor6D") and item.Name == name then return item end
+
+local JOINT_NAMES = {
+    leftArm = "LeftShoulder", rightArm = "RightShoulder",
+    leftLeg = "LeftHip", rightLeg = "RightHip",
+    waist = "Waist", neck = "Neck",
+}
+
+local function getJoint(character, name)
+    for _, descendant in character:GetDescendants() do
+        if descendant:IsA("Motor6D") and descendant.Name == name then
+            return descendant
+        end
     end
-    return nil
 end
-local function prepare(character)
+
+local function restore(player)
+    local record = jointsByPlayer[player]
+    if not record then return end
+    for _, entry in record.joints do
+        if entry.motor.Parent then entry.motor.C0 = entry.original end
+    end
+    if record.animate and record.animate.Parent then
+        record.animate.Disabled = record.animateWasDisabled
+    end
+    jointsByPlayer[player] = nil
+end
+
+local function setup(player, character)
     local joints = {}
-    for label, jointName in pairs({leftArm="LeftShoulder",rightArm="RightShoulder",leftLeg="LeftHip",rightLeg="RightHip",waist="Waist",neck="Neck"}) do
-        local motor = getMotor(character, jointName)
-        if motor then joints[label] = {motor=motor, original=motor.C0} end
+    for label, jointName in JOINT_NAMES do
+        local joint = getJoint(character, jointName)
+        if joint then joints[label] = {motor = joint, original = joint.C0} end
     end
-    return {character=character,joints=joints,aim=false,previousFlying=false,landUntil=0,landPending=false,lastUpdate=0,blend=0}
-end
-local function restore(record)
-    for _, joint in pairs(record.joints) do
-        if joint.motor.Parent then joint.motor.C0 = joint.original end
-    end
-end
-local function unregister(player)
-    local r=records[player]
-    if r then restore(r);records[player]=nil end
+    local animate = character:FindFirstChild("Animate")
+    local count = 0
+    for _ in joints do count += 1 end
+    print(string.format("Iron Man animations READY for %s: %d/6 R15 joints", player.Name, count))
+    return {
+        character = character, joints = joints, animate = animate,
+        animateWasDisabled = animate and animate.Disabled or false,
+        flying = false, lastFlying = false, landingUntil = 0,
+    }
 end
 
-event.OnServerEvent:Connect(function(player, action, enabled)
-    if action ~= "aim" or typeof(enabled) ~= "boolean" then return end
-    local character=player.Character
-    if not character or not character:FindFirstChild("AssembledIronManArmor") then return end
-    local r=records[player]
-    if not r or r.character ~= character then
-        r=prepare(character)
-        records[player]=r
+action.OnServerEvent:Connect(function(player, command, enabled)
+    if command == "aim" and typeof(enabled) == "boolean" then
+        desiredAim[player] = enabled
     end
-    r.aim=enabled
 end)
 
-local elapsed=0
+-- C0 changes are made on the server so other players see the animated armor too.
 RunService.Heartbeat:Connect(function(dt)
-    elapsed += dt
-    if elapsed < 1/30 then return end
-    local step=elapsed
-    elapsed=0
-    local now=os.clock()
+    local now = os.clock()
     for _, player in Players:GetPlayers() do
-        local character=player.Character
-        local humanoid=character and character:FindFirstChildOfClass("Humanoid")
-        local root=character and character:FindFirstChild("HumanoidRootPart")
-        local hasArmor=character and character:FindFirstChild("AssembledIronManArmor")
-        local r=records[player]
-        if not character or not humanoid or humanoid.Health<=0 or not root or not hasArmor then
-            if r then unregister(player) end
+        local character = player.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        local assembled = character and character:FindFirstChild("AssembledIronManArmor")
+        local record = jointsByPlayer[player]
+        if not character or not humanoid or humanoid.Health <= 0 or not root or not assembled then
+            if record then restore(player) end
             continue
         end
-        if not r or r.character~=character then
-            if r then unregister(player) end
-            r=prepare(character)
-            records[player]=r
+        if not record or record.character ~= character then
+            if record then restore(player) end
+            record = setup(player, character)
+            jointsByPlayer[player] = record
         end
-        local flying=character:GetAttribute("IronManFlying")==true
-        local boosting=flying and character:GetAttribute("IronManBoosting")==true
-        local velocity=root.AssemblyLinearVelocity
-        local speed=velocity.Magnitude
-        if r.previousFlying and not flying then
-            r.landPending=true
-            r.landDeadline=now+3
+        local flying = character:GetAttribute("IronManFlying") == true
+        local boosting = character:GetAttribute("IronManBoosting") == true
+        local speed = root.AssemblyLinearVelocity.Magnitude
+        local moving = math.clamp(speed / 100, 0, 1)
+        if record.lastFlying and not flying then record.landingUntil = now + 0.5 end
+        record.lastFlying = flying
+        local landing = not flying and now < record.landingUntil
+        local aiming = desiredAim[player] == true and not boosting
+        local controlling = flying or landing or aiming
+        -- Default Roblox animation tracks can otherwise fight the custom poses.
+        if record.animate and record.animate.Parent then
+            record.animate.Disabled = controlling or record.animateWasDisabled
         end
-        if flying then r.landPending=false end
-        if r.landPending and (humanoid.FloorMaterial~=Enum.Material.Air or now>(r.landDeadline or 0)) then
-            r.landPending=false
-            if humanoid.FloorMaterial~=Enum.Material.Air then r.landUntil=now+0.48 end
-        end
-        r.previousFlying=flying
-        local landing=not flying and now<r.landUntil
-        local active=flying or landing or r.aim
-        local alpha=math.clamp(step*(active and 12 or 9),0,1)
-        local aim=r.aim and not boosting
-        local t=now
-        local offsets={}
+        local pose = {}
         if flying then
-            local forward=math.clamp(-root.CFrame.LookVector:Dot(velocity)/100, -1, 1)
-            local travel=math.clamp(speed/110,0,1)
-            local bank=math.clamp(root.CFrame.RightVector:Dot(velocity)/80,-1,1)
-            local rise=math.clamp(velocity.Y/85,-1,1)
-            local flutter=math.sin(t*11)*math.min(travel,1)*4
-            local base=boosting and 1 or travel
-            -- In hover, arms stabilize downward. At speed they sweep behind the suit.
-            offsets.leftArm=pose(14+base*64+flutter,0,-14-bank*13)
-            offsets.rightArm=pose(14+base*64-flutter,0,14-bank*13)
-            offsets.leftLeg=pose(-3-base*12+flutter*0.65,0,-4+bank*6)
-            offsets.rightLeg=pose(-3-base*12-flutter*0.65,0,4+bank*6)
-            offsets.waist=pose(-base*13-rise*5,0,-bank*8)
-            offsets.neck=pose(base*9,0,bank*5)
-            if aim then offsets.rightArm=pose(-74,0,7) end
+            local strength = boosting and 1 or moving
+            local flutter = math.sin(now * 8) * (boosting and 4 or 2)
+            local relative = root.CFrame:VectorToObjectSpace(root.AssemblyLinearVelocity)
+            local bank = math.clamp(relative.X / 90, -1, 1)
+            pose.leftArm = rotate(22 + strength * 100 + flutter, 0, -22 - bank * 16)
+            pose.rightArm = rotate(22 + strength * 100 - flutter, 0, 22 - bank * 16)
+            pose.leftLeg = rotate(-8 - strength * 20, 0, -5 + bank * 9)
+            pose.rightLeg = rotate(-8 - strength * 20, 0, 5 + bank * 9)
+            pose.waist = rotate(-strength * 22, 0, -bank * 13)
+            pose.neck = rotate(strength * 13, 0, bank * 4)
+            if aiming then pose.rightArm = rotate(-85, 0, 12) end
         elseif landing then
-            local fraction=math.clamp((r.landUntil-now)/0.48,0,1)
-            local impact=math.sin(fraction*math.pi)*1
-            offsets.leftArm=pose(32*impact,0,-17*impact)
-            offsets.rightArm=pose(-38*impact,0,9*impact)
-            offsets.leftLeg=pose(-28*impact,0,-5*impact)
-            offsets.rightLeg=pose(39*impact,0,4*impact)
-            offsets.waist=pose(-24*impact,0,0)
-            offsets.neck=pose(15*impact,0,0)
-        elseif aim then
-            offsets.rightArm=pose(-83,0,10)
-            offsets.leftArm=pose(-12,0,-6)
-            offsets.waist=pose(0,-8,0)
+            local progress = math.clamp((record.landingUntil - now) / 0.5, 0, 1)
+            local strength = math.sin(progress * math.pi)
+            pose.leftArm = rotate(25 * strength, 0, -25 * strength)
+            pose.rightArm = rotate(-50 * strength, 0, 8 * strength)
+            pose.leftLeg = rotate(-35 * strength, 0, 0)
+            pose.rightLeg = rotate(35 * strength, 0, 0)
+            pose.waist = rotate(-22 * strength, 0, 0)
+        elseif aiming then
+            pose.rightArm = rotate(-95, 0, 10)
+            pose.leftArm = rotate(-10, 0, -8)
         end
-        for label, joint in pairs(r.joints) do
-            if joint.motor.Parent then
-                local desired=joint.original*(offsets[label] or CFrame.identity)
-                joint.motor.C0=joint.motor.C0:Lerp(desired,alpha)
+        local blend = 1 - math.exp(-(controlling and 11 or 15) * math.min(dt, 0.1))
+        for label, entry in record.joints do
+            if entry.motor.Parent then
+                entry.motor.C0 = entry.motor.C0:Lerp(entry.original * (pose[label] or CFrame.identity), blend)
             end
         end
     end
 end)
 
-Players.PlayerRemoving:Connect(unregister)
-Players.PlayerAdded:Connect(function(player)
-    player.CharacterRemoving:Connect(function() unregister(player) end)
+Players.PlayerRemoving:Connect(function(player)
+    restore(player)
+    desiredAim[player] = nil
 end)
+print("Iron Man animation controller LOADED")
